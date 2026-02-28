@@ -1,13 +1,11 @@
 import 'dotenv/config';
 import express from 'express';
-import mongoose from 'mongoose';
-import cookieParser from "cookie-parser";
+import cookieParser from 'cookie-parser';
 import cors from 'cors';
-import events from 'events';
-import path from 'path';
+import mongoose from 'mongoose';
 
-// DB Connections
-import { connectMongoDB, createPostgresPool } from './config/db.js';
+// DB - Serverless connections
+import { connectMongoDB, getPostgresPool } from './config/db.js';
 
 // Routes
 import authRoutes from './routes/auth.js';
@@ -19,84 +17,85 @@ import deleteAccountRouter from './routes/deleteAccount.js';
 import supportRouter from './routes/supportMail.js';
 import lockedRoutes from './routes/locked.js';
 
-// Increase max listeners
-events.defaultMaxListeners = 20;
-
 const app = express();
 
 // ==================== MIDDLEWARE ====================
 app.use(cookieParser());
-
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:3001",
-  "https://image-library-frontend.vercel.app"
-];
-
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error('Not allowed by CORS'));
-  },
+  origin: ["http://localhost:3000", "http://localhost:3001", "https://*.vercel.app"],
   credentials: true
 }));
-
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve static files (favicon included)
-app.use(express.static(path.join(process.cwd(), 'public')));
-
-// Request logging
+// Request logging (optional - remove in production if too noisy)
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
-// ==================== DATABASE CONNECTIONS ====================
-let pgPool;
-let mongoConnected = false;
-
-// PostgreSQL
-try {
-  pgPool = createPostgresPool();
-  app.locals.pgPool = pgPool;
-  console.log('✅ PostgreSQL pool created');
-} catch (err) {
-  console.error('❌ PostgreSQL connection failed:', err.message);
-}
-
-// MongoDB
-connectMongoDB()
-  .then(() => {
-    mongoConnected = true;
-    console.log('✅ MongoDB connected');
-  })
-  .catch(err => {
-    console.error('❌ MongoDB connection error:', err.message);
-  });
+// Database connection middleware (attaches connections to req)
+app.use(async (req, res, next) => {
+  try {
+    // Attach PostgreSQL pool to request (cached for serverless)
+    req.pgPool = await getPostgresPool();
+    next();
+  } catch (err) {
+    console.error('DB Middleware Error:', err);
+    next(err);
+  }
+});
 
 // ==================== ROUTES ====================
 app.get('/', (req, res) => {
   res.json({
     message: 'Image Library API',
     status: 'running',
-    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    postgres: pgPool ? 'connected' : 'disconnected'
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString()
   });
 });
 
-app.get('/health', (req, res) => {
+app.get('/health', async (req, res) => {
+  const status = {
+    mongodb: 'disconnected',
+    postgres: 'disconnected'
+  };
+  
+  try {
+    // Check PostgreSQL
+    const pgPool = await getPostgresPool();
+    const pgClient = await pgPool.connect();
+    await pgClient.query('SELECT 1');
+    pgClient.release();
+    status.postgres = 'connected';
+  } catch (err) {
+    console.error('PostgreSQL health check failed:', err.message);
+  }
+  
+  try {
+    // Check MongoDB
+    if (mongoose.connection.readyState === 1) {
+      status.mongodb = 'connected';
+    } else {
+      // Try to connect if not connected
+      await connectMongoDB();
+      status.mongodb = 'connected';
+    }
+  } catch (err) {
+    console.error('MongoDB health check failed:', err.message);
+  }
+  
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
-    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    postgres: pgPool ? 'connected' : 'disconnected',
-    environment: process.env.NODE_ENV || 'development'
+    database: status,
+    environment: process.env.NODE_ENV || 'development',
+    uptime: process.uptime()
   });
 });
 
-// Mount routes
+// Mount all routes
 app.use('/auth', authRoutes);
 app.use('/media', mediaRoutes);
 app.use('/albums', albumRoutes);
@@ -117,5 +116,4 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
-// ==================== VERCEL SERVERLESS EXPORT ====================
 export default app;

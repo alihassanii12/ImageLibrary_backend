@@ -17,22 +17,18 @@ const __dirname = path.dirname(__filename);
 
 const router = express.Router();
 
-// ==================== MONGODB CONNECTION CACHING ====================
-// Serverless ke liye global connection cache
+// ==================== GLOBAL CONNECTION CACHE ====================
 let cached = global.mongoose;
-
 if (!cached) {
   cached = global.mongoose = { conn: null, promise: null };
 }
 
 async function connectDB() {
   if (cached.conn) {
-    console.log('✅ Using existing MongoDB connection');
     return cached.conn;
   }
 
   if (!cached.promise) {
-    console.log('🔄 Creating new MongoDB connection...');
     const opts = {
       bufferCommands: false,
       maxPoolSize: 10,
@@ -56,17 +52,15 @@ async function connectDB() {
   return cached.conn;
 }
 
-// ==================== UPLOADS DIRECTORY ====================
+// ==================== TEMP DIRECTORY (Serverless-friendly) ====================
 const uploadDir = process.env.NODE_ENV === 'production' 
-  ? path.join(os.tmpdir(), 'uploads')
+  ? path.join(os.tmpdir(), 'uploads')  // Vercel ke temp directory mein save karo
   : path.join(__dirname, '../uploads');
 
+// Ensure upload directory exists
 try {
   if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
-    console.log('✅ Uploads directory created at:', uploadDir);
-  } else {
-    console.log('✅ Uploads directory exists at:', uploadDir);
   }
 } catch (err) {
   console.error('❌ Error creating uploads directory:', err.message);
@@ -93,27 +87,25 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 100 * 1024 * 1024 },
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit
 });
 
-// ==================== MIDDLEWARE ====================
-// Har request se pehle database connect karo
+// ==================== CONNECTION MIDDLEWARE ====================
 router.use(async (req, res, next) => {
   try {
-    await connectDB();
+    req.db = await connectDB(); // Attach connection to request
     next();
   } catch (err) {
     console.error('❌ Database connection failed:', err.message);
-    res.status(500).json({ error: 'Database connection failed' });
+    res.status(500).json({ error: 'Database connection failed. Please try again.' });
   }
 });
 
-// Helper to generate hash
+// ==================== HELPER FUNCTIONS ====================
 const generateUrlHash = (originalName) => {
   return crypto.createHash('sha256').update(originalName + Date.now()).digest('hex').substring(0, 16);
 };
 
-// Helper function to calculate user storage
 const calculateUserStorage = async (userId) => {
   try {
     const media = await Media.find({ 
@@ -122,16 +114,29 @@ const calculateUserStorage = async (userId) => {
     });
     
     const totalUsed = media.reduce((acc, item) => acc + (item.size || 0), 0);
-    const totalLimit = 15 * 1024 * 1024 * 1024;
+    const totalLimit = 15 * 1024 * 1024 * 1024; // 15GB limit
     
     return {
       used: totalUsed,
       total: totalLimit,
-      percentage: (totalUsed / totalLimit) * 100
+      percentage: (totalUsed / totalLimit) * 100,
+      usedGB: (totalUsed / (1024 * 1024 * 1024)).toFixed(2),
+      totalGB: "15.00"
     };
   } catch (err) {
     console.error("Error calculating storage:", err);
-    return { used: 0, total: 15 * 1024 * 1024 * 1024, percentage: 0 };
+    return { used: 0, total: 15 * 1024 * 1024 * 1024, percentage: 0, usedGB: "0.00", totalGB: "15.00" };
+  }
+};
+
+// Cleanup temp files helper
+const cleanupTempFile = (filePath) => {
+  try {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch (err) {
+    console.error("Error cleaning up file:", err);
   }
 };
 
@@ -148,33 +153,29 @@ router.get("/storage", isAuth, async (req, res) => {
 
 // ==================== UPLOAD ROUTES ====================
 router.post("/upload", isAuth, upload.array("files", 10), async (req, res) => {
-  let files = req.files;
+  const files = req.files || [];
+  const uploadedMedia = [];
+  let completed = 0;
   
   try {
     const { albumId } = req.body;
     
-    console.log('📁 Upload request received:', {
-      albumId: albumId || 'none',
-      files: files?.length || 0
-    });
-    
-    if (!files || files.length === 0) {
+    if (files.length === 0) {
       return res.status(400).json({ error: "No files uploaded" });
     }
-
-    const uploadedMedia = [];
-    let completed = 0;
 
     for (const file of files) {
       try {
         const mediaType = file.mimetype.startsWith("video/") ? "video" : "image";
         
+        // Upload to Cloudinary
         const result = await cloudinary.uploader.upload(file.path, {
           resource_type: mediaType,
           folder: "user_uploads",
           timeout: 120000
         });
 
+        // Save to MongoDB
         const mediaDoc = new Media({
           userId: req.user.id,
           originalName: file.originalname,
@@ -189,23 +190,19 @@ router.post("/upload", isAuth, upload.array("files", 10), async (req, res) => {
 
         await mediaDoc.save();
 
+        // Update album if needed
         if (albumId) {
           try {
-            const album = await Album.findOne({
-              _id: albumId,
-              userId: req.user.id
-            });
+            const album = await Album.findOneAndUpdate(
+              { _id: albumId, userId: req.user.id },
+              { $addToSet: { media: mediaDoc._id } },
+              { new: true }
+            );
 
-            if (album) {
-              if (!album.media.includes(mediaDoc._id)) {
-                album.media.push(mediaDoc._id);
-                await album.save();
-              }
-
-              if (album.media.length === 1) {
-                album.coverUrl = mediaDoc.url;
-                await album.save();
-              }
+            // Set cover URL if first media
+            if (album && album.media.length === 1) {
+              album.coverUrl = mediaDoc.url;
+              await album.save();
             }
           } catch (albumErr) {
             console.error("Error updating album:", albumErr);
@@ -222,19 +219,13 @@ router.post("/upload", isAuth, upload.array("files", 10), async (req, res) => {
           albumId: mediaDoc.albumId
         });
 
-        // Clean up temp file
-        try {
-          if (fs.existsSync(file.path)) {
-            fs.unlinkSync(file.path);
-          }
-        } catch (cleanErr) {
-          console.error("Error cleaning up file:", cleanErr);
-        }
-
         completed++;
         
       } catch (fileErr) {
-        console.error("Error processing file:", file.originalname, fileErr);
+        console.error("Error processing file:", file?.originalname, fileErr.message);
+      } finally {
+        // Always cleanup temp file
+        cleanupTempFile(file?.path);
       }
     }
 
@@ -249,15 +240,8 @@ router.post("/upload", isAuth, upload.array("files", 10), async (req, res) => {
   } catch (err) {
     console.error("Upload error:", err);
     
-    if (files) {
-      files.forEach(file => {
-        try {
-          if (file.path && fs.existsSync(file.path)) {
-            fs.unlinkSync(file.path);
-          }
-        } catch (cleanErr) {}
-      });
-    }
+    // Cleanup all temp files on error
+    files.forEach(file => cleanupTempFile(file?.path));
     
     res.status(500).json({ error: err.message || "Upload failed" });
   }
@@ -269,7 +253,7 @@ router.get("/", isAuth, async (req, res) => {
     const media = await Media.find({
       userId: req.user.id,
       isInTrash: false
-    }).sort({ createdAt: -1 });
+    }).sort({ createdAt: -1 }).lean(); // .lean() for better performance
 
     const transformedMedia = media.map(item => ({
       _id: item._id,
@@ -293,17 +277,15 @@ router.get("/", isAuth, async (req, res) => {
 // ==================== FAVORITE ====================
 router.post("/:id/favorite", isAuth, async (req, res) => {
   try {
-    const media = await Media.findOne({
-      _id: req.params.id,
-      userId: req.user.id,
-    });
+    const media = await Media.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      [{ $set: { favorite: { $eq: [false, "$favorite"] } } }],
+      { new: true }
+    );
 
     if (!media) {
       return res.status(404).json({ error: "Media not found" });
     }
-
-    media.favorite = !media.favorite;
-    await media.save();
 
     res.json({ 
       favorite: media.favorite,
@@ -318,20 +300,19 @@ router.post("/:id/favorite", isAuth, async (req, res) => {
 // ==================== TRASH ====================
 router.post("/:id/trash", isAuth, async (req, res) => {
   try {
-    const media = await Media.findOne({
-      _id: req.params.id,
-      userId: req.user.id,
-    });
+    const media = await Media.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      {
+        isInTrash: true,
+        trashedAt: new Date(),
+        scheduledDeleteAt: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000)
+      },
+      { new: true }
+    );
 
     if (!media) {
       return res.status(404).json({ error: "Media not found" });
     }
-
-    media.isInTrash = true;
-    media.trashedAt = new Date();
-    media.scheduledDeleteAt = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000);
-    
-    await media.save();
 
     const storage = await calculateUserStorage(req.user.id);
 
@@ -349,21 +330,19 @@ router.post("/:id/trash", isAuth, async (req, res) => {
 // Restore from trash
 router.post("/:id/restore", isAuth, async (req, res) => {
   try {
-    const media = await Media.findOne({
-      _id: req.params.id,
-      userId: req.user.id,
-      isInTrash: true
-    });
+    const media = await Media.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id, isInTrash: true },
+      {
+        isInTrash: false,
+        trashedAt: null,
+        scheduledDeleteAt: null
+      },
+      { new: true }
+    );
 
     if (!media) {
       return res.status(404).json({ error: "Media not found in trash" });
     }
-
-    media.isInTrash = false;
-    media.trashedAt = null;
-    media.scheduledDeleteAt = null;
-    
-    await media.save();
 
     const storage = await calculateUserStorage(req.user.id);
 
@@ -383,7 +362,7 @@ router.get("/trash/all", isAuth, async (req, res) => {
     const trashedMedia = await Media.find({
       userId: req.user.id,
       isInTrash: true
-    }).sort({ trashedAt: -1 });
+    }).sort({ trashedAt: -1 }).lean();
 
     const transformedMedia = trashedMedia.map(item => ({
       _id: item._id,
@@ -393,7 +372,7 @@ router.get("/trash/all", isAuth, async (req, res) => {
       size: item.size,
       trashedAt: item.trashedAt,
       scheduledDeleteAt: item.scheduledDeleteAt,
-      daysLeft: Math.ceil((item.scheduledDeleteAt - new Date()) / (1000 * 60 * 60 * 24))
+      daysLeft: Math.max(0, Math.ceil((item.scheduledDeleteAt - new Date()) / (1000 * 60 * 60 * 24)))
     }));
 
     res.json(transformedMedia);
@@ -408,17 +387,14 @@ router.post("/bulk-trash", isAuth, async (req, res) => {
   try {
     const { mediaIds } = req.body;
 
-    if (!mediaIds || !mediaIds.length) {
+    if (!mediaIds?.length) {
       return res.status(400).json({ error: "No media selected" });
     }
 
     const scheduledDeleteAt = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000);
 
-    await Media.updateMany(
-      { 
-        _id: { $in: mediaIds },
-        userId: req.user.id 
-      },
+    const result = await Media.updateMany(
+      { _id: { $in: mediaIds }, userId: req.user.id },
       { 
         isInTrash: true,
         trashedAt: new Date(),
@@ -429,7 +405,7 @@ router.post("/bulk-trash", isAuth, async (req, res) => {
     const storage = await calculateUserStorage(req.user.id);
 
     res.json({ 
-      message: `${mediaIds.length} items moved to trash`,
+      message: `${result.modifiedCount} items moved to trash`,
       storage: storage
     });
   } catch (err) {
@@ -443,16 +419,12 @@ router.post("/bulk-restore", isAuth, async (req, res) => {
   try {
     const { mediaIds } = req.body;
 
-    if (!mediaIds || !mediaIds.length) {
+    if (!mediaIds?.length) {
       return res.status(400).json({ error: "No media selected" });
     }
 
-    await Media.updateMany(
-      { 
-        _id: { $in: mediaIds },
-        userId: req.user.id,
-        isInTrash: true
-      },
+    const result = await Media.updateMany(
+      { _id: { $in: mediaIds }, userId: req.user.id, isInTrash: true },
       { 
         isInTrash: false,
         trashedAt: null,
@@ -463,7 +435,7 @@ router.post("/bulk-restore", isAuth, async (req, res) => {
     const storage = await calculateUserStorage(req.user.id);
 
     res.json({ 
-      message: `${mediaIds.length} items restored`,
+      message: `${result.modifiedCount} items restored`,
       storage: storage
     });
   } catch (err) {
@@ -475,19 +447,15 @@ router.post("/bulk-restore", isAuth, async (req, res) => {
 // ==================== LOCKED FOLDER ====================
 router.post("/:id/lock", isAuth, async (req, res) => {
   try {
-    const media = await Media.findOne({
-      _id: req.params.id,
-      userId: req.user.id,
-    });
+    const media = await Media.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      [{ $set: { isLocked: { $eq: [false, "$isLocked"] }, lockedAt: { $cond: { if: { $eq: ["$isLocked", false] }, then: new Date(), else: null } } } }],
+      { new: true }
+    );
 
     if (!media) {
       return res.status(404).json({ error: "Media not found" });
     }
-
-    media.isLocked = !media.isLocked;
-    media.lockedAt = media.isLocked ? new Date() : null;
-    
-    await media.save();
 
     const storage = await calculateUserStorage(req.user.id);
 
@@ -505,11 +473,10 @@ router.post("/:id/lock", isAuth, async (req, res) => {
 // Get locked media
 router.get("/locked/all", isAuth, async (req, res) => {
   try {
-    const lockedFolder = await LockedFolder.findOne({ userId: req.user.id });
+    const lockedFolder = await LockedFolder.findOne({ userId: req.user.id }).lean();
     
-    const hasAccess = lockedFolder && 
-      lockedFolder.hasAccess && 
-      lockedFolder.sessionExpires && 
+    const hasAccess = lockedFolder?.hasAccess && 
+      lockedFolder?.sessionExpires && 
       lockedFolder.sessionExpires > new Date();
 
     if (!hasAccess) {
@@ -520,7 +487,7 @@ router.get("/locked/all", isAuth, async (req, res) => {
       userId: req.user.id,
       isLocked: true,
       isInTrash: false
-    }).sort({ lockedAt: -1 });
+    }).sort({ lockedAt: -1 }).lean();
 
     const secureMedia = lockedMedia.map(m => ({
       _id: m._id,
@@ -543,30 +510,26 @@ router.get("/locked/all", isAuth, async (req, res) => {
 // Access locked media
 router.post("/locked/access/:hash", isAuth, async (req, res) => {
   try {
-    const lockedFolder = await LockedFolder.findOne({ userId: req.user.id });
+    const lockedFolder = await LockedFolder.findOne({ userId: req.user.id }).lean();
     
-    const hasAccess = lockedFolder && 
-      lockedFolder.hasAccess && 
-      lockedFolder.sessionExpires && 
-      lockedFolder.sessionExpires > new Date();
+    const hasAccess = lockedFolder?.hasAccess && 
+      lockedFolder?.sessionExpires > new Date();
 
     if (!hasAccess) {
       return res.status(403).json({ error: "Access denied. Please verify password first." });
     }
 
-    const { hash } = req.params;
-    
     const media = await Media.findOne({
       userId: req.user.id,
       isLocked: true
-    });
+    }).lean();
 
     if (!media) {
       return res.status(404).json({ error: "Media not found" });
     }
 
     const expectedHash = generateUrlHash(media.originalName);
-    if (hash !== expectedHash) {
+    if (req.params.hash !== expectedHash) {
       return res.status(403).json({ error: "Invalid access" });
     }
 
@@ -579,17 +542,20 @@ router.post("/locked/access/:hash", isAuth, async (req, res) => {
 
 // ==================== PERMANENT DELETE ====================
 router.delete("/permanent/:id", isAuth, async (req, res) => {
+  let media = null;
+  
   try {
-    const media = await Media.findOne({
+    media = await Media.findOne({
       _id: req.params.id,
       userId: req.user.id,
       isInTrash: true
     });
 
     if (!media) {
-      return res.status(404).json({ error: "Media not found" });
+      return res.status(404).json({ error: "Media not found in trash" });
     }
 
+    // Delete from Cloudinary
     try {
       await cloudinary.uploader.destroy(media.public_id, {
         resource_type: media.mediaType,
@@ -598,6 +564,7 @@ router.delete("/permanent/:id", isAuth, async (req, res) => {
       console.error("Cloudinary delete error:", cloudinaryErr);
     }
 
+    // Delete from MongoDB
     await media.deleteOne();
 
     const storage = await calculateUserStorage(req.user.id);
@@ -621,6 +588,7 @@ router.post('/move-media', isAuth, async (req, res) => {
       return res.status(400).json({ error: 'mediaId is required' });
     }
 
+    // Find media
     const media = await Media.findOne({
       _id: mediaId,
       userId: req.user.id
@@ -630,52 +598,27 @@ router.post('/move-media', isAuth, async (req, res) => {
       return res.status(404).json({ error: 'Media not found' });
     }
 
+    // Remove from current album if exists
     if (media.albumId) {
-      const currentAlbum = await Album.findOne({
-        _id: media.albumId,
-        userId: req.user.id
-      });
-      
-      if (currentAlbum) {
-        currentAlbum.media = currentAlbum.media.filter(id => id.toString() !== mediaId);
-        await currentAlbum.save();
-        
-        if (currentAlbum.coverUrl === media.url) {
-          if (currentAlbum.media.length > 0) {
-            const firstMedia = await Media.findById(currentAlbum.media[0]);
-            if (firstMedia) {
-              currentAlbum.coverUrl = firstMedia.url;
-              await currentAlbum.save();
-            }
-          } else {
-            currentAlbum.coverUrl = '';
-            await currentAlbum.save();
-          }
-        }
-      }
+      await Album.updateOne(
+        { _id: media.albumId, userId: req.user.id },
+        { $pull: { media: mediaId } }
+      );
     }
 
+    // Add to target album if specified
     if (targetAlbumId) {
-      const targetAlbum = await Album.findOne({
-        _id: targetAlbumId,
-        userId: req.user.id
-      });
+      const targetAlbum = await Album.findOneAndUpdate(
+        { _id: targetAlbumId, userId: req.user.id },
+        { $addToSet: { media: mediaId } },
+        { new: true }
+      );
 
       if (!targetAlbum) {
         return res.status(404).json({ error: 'Target album not found' });
       }
 
-      if (!targetAlbum.media.includes(mediaId)) {
-        targetAlbum.media.push(mediaId);
-        await targetAlbum.save();
-      }
-
       media.albumId = targetAlbumId;
-      
-      if (targetAlbum.media.length === 1) {
-        targetAlbum.coverUrl = media.url;
-        await targetAlbum.save();
-      }
     } else {
       media.albumId = null;
     }
@@ -707,68 +650,44 @@ router.post('/bulk-move-media', isAuth, async (req, res) => {
   try {
     const { mediaIds, targetAlbumId } = req.body;
 
-    if (!mediaIds || !Array.isArray(mediaIds) || mediaIds.length === 0) {
+    if (!mediaIds?.length) {
       return res.status(400).json({ error: 'mediaIds array is required' });
     }
 
-    let targetAlbum = null;
+    // Remove from all current albums
+    await Album.updateMany(
+      { userId: req.user.id },
+      { $pull: { media: { $in: mediaIds } } }
+    );
+
+    // Add to target album if specified
     if (targetAlbumId) {
-      targetAlbum = await Album.findOne({
-        _id: targetAlbumId,
-        userId: req.user.id
-      });
+      const targetAlbum = await Album.findOneAndUpdate(
+        { _id: targetAlbumId, userId: req.user.id },
+        { $addToSet: { media: { $each: mediaIds } } },
+        { new: true }
+      );
 
       if (!targetAlbum) {
         return res.status(404).json({ error: 'Target album not found' });
       }
-    }
 
-    let movedCount = 0;
-    for (const mediaId of mediaIds) {
-      try {
-        const media = await Media.findOne({
-          _id: mediaId,
-          userId: req.user.id
-        });
-
-        if (!media) continue;
-
-        if (media.albumId) {
-          const currentAlbum = await Album.findOne({
-            _id: media.albumId,
-            userId: req.user.id
-          });
-          
-          if (currentAlbum) {
-            currentAlbum.media = currentAlbum.media.filter(id => id.toString() !== mediaId);
-            await currentAlbum.save();
-          }
-        }
-
-        if (targetAlbum) {
-          if (!targetAlbum.media.includes(mediaId)) {
-            targetAlbum.media.push(mediaId);
-          }
-          media.albumId = targetAlbumId;
-        } else {
-          media.albumId = null;
-        }
-
-        await media.save();
-        movedCount++;
-        
-      } catch (itemErr) {
-        console.error(`Error processing media ${mediaId}:`, itemErr);
-      }
-    }
-
-    if (targetAlbum) {
-      await targetAlbum.save();
+      // Update all media with target album ID
+      await Media.updateMany(
+        { _id: { $in: mediaIds }, userId: req.user.id },
+        { albumId: targetAlbumId }
+      );
+    } else {
+      // Remove album ID from all media
+      await Media.updateMany(
+        { _id: { $in: mediaIds }, userId: req.user.id },
+        { albumId: null }
+      );
     }
 
     res.json({ 
-      message: `Moved ${movedCount} items successfully`,
-      count: movedCount
+      message: `Moved ${mediaIds.length} items successfully`,
+      count: mediaIds.length
     });
   } catch (err) {
     console.error('Error bulk moving media:', err);
