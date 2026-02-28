@@ -4,8 +4,9 @@ import mongoose from 'mongoose';
 import cookieParser from "cookie-parser";
 import cors from 'cors';
 import events from 'events';
+import path from 'path';
 
-// ✅ CORRECT IMPORT PATH
+// DB Connections
 import { connectMongoDB, createPostgresPool } from './config/db.js';
 
 // Routes
@@ -25,12 +26,26 @@ const app = express();
 
 // ==================== MIDDLEWARE ====================
 app.use(cookieParser());
+
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "https://image-library-frontend.vercel.app"
+];
+
 app.use(cors({
-  origin: ["http://localhost:3000", "http://localhost:3001", "https://*.vercel.app"],
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true
 }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Serve static files (favicon included)
+app.use(express.static(path.join(process.cwd(), 'public')));
 
 // Request logging
 app.use((req, res, next) => {
@@ -103,7 +118,4 @@ app.use((err, req, res, next) => {
 });
 
 // ==================== VERCEL SERVERLESS EXPORT ====================
-// ❌ NO app.listen() - Vercel serverless mein ye nahi chalta
-// ✅ Sirf export default app
-
 export default app;
