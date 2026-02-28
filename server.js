@@ -44,6 +44,10 @@ const pgPool = new Pool({
   database: process.env.PG_DB,
   password: process.env.PG_PASSWORD,
   port: Number(process.env.PG_PORT),
+
+  ssl:{
+    rejectUnauthorized: false
+  }
 });
 app.locals.pgPool = pgPool;
 
