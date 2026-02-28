@@ -1,9 +1,12 @@
 import 'dotenv/config';
 import express from 'express';
-import mongoose from 'mongoose';  // ✅ IMPORTANT: Add this!
+import mongoose from 'mongoose';
 import cookieParser from "cookie-parser";
 import cors from 'cors';
 import events from 'events';
+
+// ✅ CORRECT IMPORT PATH
+import { connectMongoDB, createPostgresPool } from './config/db.js';
 
 // Routes
 import authRoutes from './routes/auth.js';
@@ -15,15 +18,12 @@ import deleteAccountRouter from './routes/deleteAccount.js';
 import supportRouter from './routes/supportMail.js';
 import lockedRoutes from './routes/locked.js';
 
-// DB config
-import { connectMongoDB, createPostgresPool } from './config/db.js';
-
 // Increase max listeners
 events.defaultMaxListeners = 20;
 
 const app = express();
 
-// Middleware
+// ==================== MIDDLEWARE ====================
 app.use(cookieParser());
 app.use(cors({
   origin: ["http://localhost:3000", "http://localhost:3001", "https://*.vercel.app"],

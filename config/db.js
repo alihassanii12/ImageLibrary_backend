@@ -9,6 +9,8 @@ export const connectMongoDB = async () => {
     }
     
     console.log('🔍 Connecting to MongoDB...');
+    console.log('MONGO_URI exists:', !!process.env.MONGO_URI);
+    
     await mongoose.connect(process.env.MONGO_URI, {
       serverSelectionTimeoutMS: 5000,
       socketTimeoutMS: 45000,
@@ -18,6 +20,7 @@ export const connectMongoDB = async () => {
       console.error('MongoDB connection error:', err);
     });
     
+    console.log('✅ MongoDB connected successfully');
     return mongoose;
   } catch (err) {
     console.error('❌ MongoDB connection failed:', err.message);
@@ -26,8 +29,12 @@ export const connectMongoDB = async () => {
 };
 
 export const createPostgresPool = () => {
-  if (!process.env.PG_USER || !process.env.PG_PASSWORD || !process.env.PG_DB || !process.env.PG_HOST || !process.env.PG_PORT) {
-    throw new Error("PostgreSQL environment variables missing");
+  // Check all required PostgreSQL env variables
+  const required = ['PG_USER', 'PG_PASSWORD', 'PG_HOST', 'PG_PORT', 'PG_DB'];
+  const missing = required.filter(key => !process.env[key]);
+  
+  if (missing.length > 0) {
+    throw new Error(`Missing PostgreSQL environment variables: ${missing.join(', ')}`);
   }
 
   const pool = new Pool({
@@ -36,7 +43,10 @@ export const createPostgresPool = () => {
     database: process.env.PG_DB,
     password: process.env.PG_PASSWORD,
     port: Number(process.env.PG_PORT),
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+    max: 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 2000,
   });
 
   pool.on('error', (err) => {
