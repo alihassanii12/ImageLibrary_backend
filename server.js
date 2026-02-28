@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import mongoose from 'mongoose';  // ✅ IMPORTANT: Add this!
 import cookieParser from "cookie-parser";
 import cors from 'cors';
 import events from 'events';
@@ -25,7 +26,7 @@ const app = express();
 // Middleware
 app.use(cookieParser());
 app.use(cors({
-  origin: ["http://localhost:3000", "http://localhost:3001"],
+  origin: ["http://localhost:3000", "http://localhost:3001", "https://*.vercel.app"],
   credentials: true
 }));
 app.use(express.json());
@@ -37,24 +38,36 @@ app.use((req, res, next) => {
   next();
 });
 
-// Connect databases
+// ==================== DATABASE CONNECTIONS ====================
 let pgPool;
+let mongoConnected = false;
+
+// PostgreSQL
 try {
   pgPool = createPostgresPool();
   app.locals.pgPool = pgPool;
+  console.log('✅ PostgreSQL pool created');
 } catch (err) {
   console.error('❌ PostgreSQL connection failed:', err.message);
 }
 
-connectMongoDB().catch(err => {
-  console.error('❌ MongoDB connection error:', err.message);
-});
+// MongoDB
+connectMongoDB()
+  .then(() => {
+    mongoConnected = true;
+    console.log('✅ MongoDB connected');
+  })
+  .catch(err => {
+    console.error('❌ MongoDB connection error:', err.message);
+  });
 
-// Routes
+// ==================== ROUTES ====================
 app.get('/', (req, res) => {
   res.json({
     message: 'Image Library API',
-    status: 'running'
+    status: 'running',
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    postgres: pgPool ? 'connected' : 'disconnected'
   });
 });
 
@@ -63,10 +76,12 @@ app.get('/health', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    postgres: pgPool ? 'connected' : 'disconnected'
+    postgres: pgPool ? 'connected' : 'disconnected',
+    environment: process.env.NODE_ENV || 'development'
   });
 });
 
+// Mount routes
 app.use('/auth', authRoutes);
 app.use('/media', mediaRoutes);
 app.use('/albums', albumRoutes);
@@ -87,5 +102,8 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || 'Internal server error' });
 });
 
-// Export for Vercel
+// ==================== VERCEL SERVERLESS EXPORT ====================
+// ❌ NO app.listen() - Vercel serverless mein ye nahi chalta
+// ✅ Sirf export default app
+
 export default app;

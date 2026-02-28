@@ -1,16 +1,27 @@
-// config/db.js
 import mongoose from 'mongoose';
 import pkg from 'pg';
 const { Pool } = pkg;
 
 export const connectMongoDB = async () => {
   try {
-    if (!process.env.MONGO_URI) throw new Error("MONGO_URI is not defined in environment");
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log('✅ MongoDB connected');
+    if (!process.env.MONGO_URI) {
+      throw new Error("MONGO_URI is not defined in environment");
+    }
+    
+    console.log('🔍 Connecting to MongoDB...');
+    await mongoose.connect(process.env.MONGO_URI, {
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    });
+    
+    mongoose.connection.on('error', (err) => {
+      console.error('MongoDB connection error:', err);
+    });
+    
+    return mongoose;
   } catch (err) {
     console.error('❌ MongoDB connection failed:', err.message);
-    throw err; // throw so that server knows connection failed
+    throw err;
   }
 };
 
