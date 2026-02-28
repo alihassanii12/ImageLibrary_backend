@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",   
-    "vercel-build": "echo 'Building..."
+    "vercel-build": "echo Building..."
   },
   "keywords": [],
   "author": "",
