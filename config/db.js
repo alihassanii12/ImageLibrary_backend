@@ -90,24 +90,26 @@ export const getPostgresPool = async () => {
       });
 
       // ✅ OPTIMIZED FOR SERVERLESS (Neon.tech)
-      const pool = new Pool({
-        user: process.env.PG_USER,
-        host: process.env.PG_HOST,
-        database: process.env.PG_DB,
-        password: process.env.PG_PASSWORD,
-        port: Number(process.env.PG_PORT),
-        ssl: process.env.NODE_ENV === 'production' ? { 
-          rejectUnauthorized: false,
-          sslmode: 'require'
-        } : false,
-        // ✅ Serverless optimized settings
-        max: 3,                    // Max connections (reduce from 5)
-        min: 0,                     // Min connections (allow 0 idle)
-        idleTimeoutMillis: 3000,    // Close idle connections faster (3 sec)
-        connectionTimeoutMillis: 3000, // Connection timeout
-        maxUses: 3000,              // Reconnect after 3000 queries
-        allowExitOnIdle: true,      // Allow pool to exit when idle
-      });
+    // config/db.js - Update pool for Neon.tech
+
+const pool = new Pool({
+  user: process.env.PG_USER,
+  host: process.env.PG_HOST,
+  database: process.env.PG_DB,
+  password: process.env.PG_PASSWORD,
+  port: Number(process.env.PG_PORT),
+  ssl: {
+    rejectUnauthorized: false,
+    sslmode: 'require'
+  },
+  // ✅ Neon.tech specific settings
+  max: 2,                    // Even fewer connections
+  min: 0,
+  idleTimeoutMillis: 1000,    // Very fast idle timeout
+  connectionTimeoutMillis: 2000,
+  maxUses: 1000,
+  keepAlive: false,           // Disable keep alive for Neon
+});
 
       pool.on('error', (err) => {
         console.error('❌ PostgreSQL pool error:', err);
