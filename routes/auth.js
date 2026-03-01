@@ -6,14 +6,12 @@ import isAuth from "../middleware/isAuth.js";
 const router = express.Router();
 
 /* ================= COOKIE OPTIONS ================= */
-// routes/auth.js - Update cookie options
-
 const accessCookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production', // true in production
+  secure: process.env.NODE_ENV === 'production',
   sameSite: "lax",
   path: "/",
-  domain: process.env.NODE_ENV === 'production' ? ".vercel.app" : undefined, // ✅ Add this
+  domain: process.env.NODE_ENV === 'production' ? ".vercel.app" : undefined,
   maxAge: 15 * 24 * 60 * 60 * 1000 // 15 days
 };
 
@@ -22,7 +20,7 @@ const refreshCookieOptions = {
   secure: process.env.NODE_ENV === 'production',
   sameSite: "lax",
   path: "/",
-  domain: process.env.NODE_ENV === 'production' ? ".vercel.app" : undefined, // ✅ Add this
+  domain: process.env.NODE_ENV === 'production' ? ".vercel.app" : undefined,
   maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
 };
 
@@ -47,19 +45,10 @@ const generateRefreshToken = () =>
 router.post("/register", async (req, res) => {
   const { name, email, password } = req.body;
   
-  // ✅ Get pool from both possible locations
   const pool = req.pgPool || req.app?.locals?.pgPool;
-  
-  console.log('🔍 Register route - Pool check:', {
-    fromReq: !!req.pgPool,
-    fromAppLocals: !!(req.app?.locals?.pgPool),
-    final: !!pool
-  });
 
   if (!pool) {
     console.error('❌ Database pool not available');
-    console.error('req.pgPool:', req.pgPool);
-    console.error('req.app.locals:', req.app?.locals);
     return res.status(500).json({ error: "Database connection error" });
   }
 
@@ -102,8 +91,11 @@ router.post("/register", async (req, res) => {
     res.cookie("token", accessToken, accessCookieOptions);
     res.cookie("refreshToken", refreshToken, refreshCookieOptions);
 
+    // ✅ Send token in response as well
     res.status(201).json({ 
       message: "Registration successful",
+      token: accessToken,
+      refreshToken: refreshToken,
       user 
     });
 
@@ -148,10 +140,14 @@ router.post("/login", async (req, res) => {
       [user.id, refreshToken]
     );
 
+    // Set cookies
     res.cookie("token", accessToken, accessCookieOptions);
     res.cookie("refreshToken", refreshToken, refreshCookieOptions);
 
+    // ✅ Send token in response
     res.json({
+      token: accessToken,
+      refreshToken: refreshToken,
       user: {
         id: user.id,
         name: user.name,
@@ -199,7 +195,10 @@ router.post("/refresh", async (req, res) => {
 
     res.cookie("token", newAccessToken, accessCookieOptions);
 
-    res.json({ success: true });
+    res.json({ 
+      success: true,
+      token: newAccessToken 
+    });
 
   } catch (err) {
     console.error('❌ Refresh error:', err);
