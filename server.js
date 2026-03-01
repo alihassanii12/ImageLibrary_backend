@@ -22,7 +22,7 @@ const app = express();
 // ==================== MIDDLEWARE ====================
 app.use(cookieParser());
 
-// ✅ FIXED CORS - removed trailing slash from URL
+// ✅ CORS with all frontend URLs
 app.use(cors({
   origin: [
     "http://localhost:3000", 
@@ -42,13 +42,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// Database connection middleware
+// ✅ Database connection middleware - ATTACHES pgPool TO req
 app.use(async (req, res, next) => {
   try {
     req.pgPool = await getPostgresPool();
     next();
   } catch (err) {
-    console.error('DB Middleware Error:', err);
+    console.error('❌ DB Middleware Error:', err);
     next(err);
   }
 });
@@ -76,7 +76,7 @@ app.get('/health', async (req, res) => {
     pgClient.release();
     status.postgres = 'connected';
   } catch (err) {
-    console.error('PostgreSQL health check failed:', err.message);
+    console.error('❌ PostgreSQL health check failed:', err.message);
   }
   
   try {
@@ -87,7 +87,7 @@ app.get('/health', async (req, res) => {
       status.mongodb = 'connected';
     }
   } catch (err) {
-    console.error('MongoDB health check failed:', err.message);
+    console.error('❌ MongoDB health check failed:', err.message);
   }
   
   res.json({

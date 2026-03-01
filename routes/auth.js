@@ -1,5 +1,5 @@
 import express from "express";
-import bcrypt from "bcryptjs";
+import bcrypt from "bcryptjs";  // ✅ Changed from bcrypt to bcryptjs
 import jwt from "jsonwebtoken";
 import isAuth from "../middleware/isAuth.js";
 
@@ -9,18 +9,18 @@ const router = express.Router();
 
 const accessCookieOptions = {
   httpOnly: true,
-  secure: false, // change to true in production (HTTPS)
+  secure: process.env.NODE_ENV === 'production', // true in production
   sameSite: "lax",
   path: "/",
-  maxAge: 15 * 24 *60*  60 * 1000
+  maxAge: 15 * 24 * 60 * 60 * 1000 // 15 days
 };
 
 const refreshCookieOptions = {
   httpOnly: true,
-  secure: false,
+  secure: process.env.NODE_ENV === 'production',
   sameSite: "lax",
   path: "/",
-  maxAge: 7 * 60 * 1000
+  maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
 };
 
 /* ================= TOKEN HELPERS ================= */
@@ -45,44 +45,59 @@ const generateRefreshToken = () =>
 
 router.post("/register", async (req, res) => {
   const { name, email, password } = req.body;
-  const pool = req.app.locals.pgPool;
+  const pool = req.app.locals.pgPool; // ✅ Get from app.locals
+
+  if (!pool) {
+    console.error('❌ Database pool not available');
+    return res.status(500).json({ error: "Database connection error" });
+  }
 
   try {
+    // Check if user exists
     const exists = await pool.query(
       "SELECT id FROM users WHERE email = $1",
       [email]
     );
 
-    if (exists.rows.length)
+    if (exists.rows.length) {
       return res.status(400).json({ error: "User already exists" });
+    }
 
+    // Hash password with bcryptjs
     const hashed = await bcrypt.hash(password, 10);
 
+    // Insert user
     const result = await pool.query(
-      `INSERT INTO users (name,email,password,auth_provider)
-       VALUES ($1,$2,$3,'local')
-       RETURNING id,name,email,role`,
+      `INSERT INTO users (name, email, password, auth_provider)
+       VALUES ($1, $2, $3, 'local')
+       RETURNING id, name, email, role`,
       [name, email, hashed]
     );
 
     const user = result.rows[0];
 
+    // Generate tokens
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken();
 
+    // Save session
     await pool.query(
-      `INSERT INTO sessions (user_id,refresh_token,expires_at)
-       VALUES ($1,$2,NOW()+INTERVAL '7 days')`,
+      `INSERT INTO sessions (user_id, refresh_token, expires_at)
+       VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
       [user.id, refreshToken]
     );
 
+    // Set cookies
     res.cookie("token", accessToken, accessCookieOptions);
     res.cookie("refreshToken", refreshToken, refreshCookieOptions);
 
-    res.json({ user });
+    res.status(201).json({ 
+      message: "Registration successful",
+      user 
+    });
 
   } catch (err) {
-    console.error(err);
+    console.error('❌ Registration error:', err);
     res.status(500).json({ error: "Registration failed" });
   }
 });
@@ -93,27 +108,34 @@ router.post("/login", async (req, res) => {
   const { email, password } = req.body;
   const pool = req.app.locals.pgPool;
 
+  if (!pool) {
+    return res.status(500).json({ error: "Database connection error" });
+  }
+
   try {
     const result = await pool.query(
       "SELECT * FROM users WHERE email = $1",
       [email]
     );
 
-    if (!result.rows.length)
+    if (!result.rows.length) {
       return res.status(400).json({ error: "User not found" });
+    }
 
     const user = result.rows[0];
 
+    // Compare password with bcryptjs
     const match = await bcrypt.compare(password, user.password);
-    if (!match)
+    if (!match) {
       return res.status(400).json({ error: "Invalid credentials" });
+    }
 
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken();
 
     await pool.query(
-      `INSERT INTO sessions (user_id,refresh_token,expires_at)
-       VALUES ($1,$2,NOW()+INTERVAL '7 days')`,
+      `INSERT INTO sessions (user_id, refresh_token, expires_at)
+       VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
       [user.id, refreshToken]
     );
 
@@ -130,7 +152,7 @@ router.post("/login", async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error('❌ Login error:', err);
     res.status(500).json({ error: "Login failed" });
   }
 });
@@ -141,8 +163,9 @@ router.post("/refresh", async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
   const pool = req.app.locals.pgPool;
 
-  if (!refreshToken)
+  if (!refreshToken) {
     return res.status(401).json({ error: "No refresh token" });
+  }
 
   try {
     const session = await pool.query(
@@ -151,11 +174,12 @@ router.post("/refresh", async (req, res) => {
       [refreshToken]
     );
 
-    if (!session.rows.length)
+    if (!session.rows.length) {
       return res.status(401).json({ error: "Invalid refresh token" });
+    }
 
     const user = await pool.query(
-      "SELECT id,email,role FROM users WHERE id=$1",
+      "SELECT id, email, role FROM users WHERE id = $1",
       [session.rows[0].user_id]
     );
 
@@ -166,7 +190,7 @@ router.post("/refresh", async (req, res) => {
     res.json({ success: true });
 
   } catch (err) {
-    console.error(err);
+    console.error('❌ Refresh error:', err);
     res.status(403).json({ error: "Token refresh failed" });
   }
 });
@@ -177,7 +201,7 @@ router.post("/logout", async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
   const pool = req.app.locals.pgPool;
 
-  if (refreshToken) {
+  if (refreshToken && pool) {
     await pool.query(
       "DELETE FROM sessions WHERE refresh_token = $1",
       [refreshToken]
@@ -191,18 +215,20 @@ router.post("/logout", async (req, res) => {
 });
 
 /* ================= CURRENT USER ================= */
-// backend/routes/auth.js
+
 router.get("/me", isAuth, async (req, res) => {
   const pool = req.app.locals.pgPool;
 
   try {
     const result = await pool.query(
-      "SELECT id, name, email, role, plan, google_picture, auth_provider FROM users WHERE id = $1",
+      `SELECT id, name, email, role, plan, google_picture, auth_provider 
+       FROM users WHERE id = $1`,
       [req.user.id]
     );
 
-    if (!result.rows.length)
+    if (!result.rows.length) {
       return res.status(404).json({ error: "User not found" });
+    }
 
     const user = result.rows[0];
     
@@ -213,14 +239,15 @@ router.get("/me", isAuth, async (req, res) => {
         email: user.email,
         role: user.role,
         plan: user.plan,
-        avatar: user.google_picture, // 👈 google_picture ko avatar mein map karo
+        avatar: user.google_picture,
         auth_provider: user.auth_provider || 'local'
       }
     });
 
   } catch (err) {
-    console.error(err);
+    console.error('❌ Get user error:', err);
     res.status(500).json({ error: "Failed to fetch user" });
   }
 });
+
 export default router;
