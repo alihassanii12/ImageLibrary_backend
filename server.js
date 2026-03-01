@@ -28,6 +28,7 @@ app.use(cors({
     "http://localhost:3000", 
     "http://localhost:3001",
     "https://image-library-frontend.vercel.app",
+    "https://imagelibraryfrontendapp.vercel.app",
     "https://*.vercel.app"
   ],
   credentials: true
@@ -42,10 +43,19 @@ app.use((req, res, next) => {
   next();
 });
 
-// ✅ Database connection middleware - ATTACHES pgPool TO req
+// ✅ Database connection middleware - FIXED with proper attachment
 app.use(async (req, res, next) => {
   try {
-    req.pgPool = await getPostgresPool();
+    console.log('🔍 Getting PostgreSQL pool for request:', req.url);
+    
+    const pool = await getPostgresPool();
+    console.log('✅ Pool obtained:', !!pool);
+    
+    // Attach to BOTH places for compatibility
+    req.pgPool = pool;
+    req.app.locals.pgPool = pool;
+    
+    console.log('✅ Pool attached to req and app.locals');
     next();
   } catch (err) {
     console.error('❌ DB Middleware Error:', err);

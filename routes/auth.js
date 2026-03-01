@@ -1,15 +1,14 @@
 import express from "express";
-import bcrypt from "bcryptjs";  // ✅ Changed from bcrypt to bcryptjs
+import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import isAuth from "../middleware/isAuth.js";
 
 const router = express.Router();
 
 /* ================= COOKIE OPTIONS ================= */
-
 const accessCookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production', // true in production
+  secure: process.env.NODE_ENV === 'production',
   sameSite: "lax",
   path: "/",
   maxAge: 15 * 24 * 60 * 60 * 1000 // 15 days
@@ -24,7 +23,6 @@ const refreshCookieOptions = {
 };
 
 /* ================= TOKEN HELPERS ================= */
-
 const generateAccessToken = (user) =>
   jwt.sign(
     {
@@ -42,13 +40,22 @@ const generateRefreshToken = () =>
   });
 
 /* ================= REGISTER ================= */
-
 router.post("/register", async (req, res) => {
   const { name, email, password } = req.body;
-  const pool = req.app.locals.pgPool; // ✅ Get from app.locals
+  
+  // ✅ Get pool from both possible locations
+  const pool = req.pgPool || req.app?.locals?.pgPool;
+  
+  console.log('🔍 Register route - Pool check:', {
+    fromReq: !!req.pgPool,
+    fromAppLocals: !!(req.app?.locals?.pgPool),
+    final: !!pool
+  });
 
   if (!pool) {
     console.error('❌ Database pool not available');
+    console.error('req.pgPool:', req.pgPool);
+    console.error('req.app.locals:', req.app?.locals);
     return res.status(500).json({ error: "Database connection error" });
   }
 
@@ -98,15 +105,14 @@ router.post("/register", async (req, res) => {
 
   } catch (err) {
     console.error('❌ Registration error:', err);
-    res.status(500).json({ error: "Registration failed" });
+    res.status(500).json({ error: err.message || "Registration failed" });
   }
 });
 
 /* ================= LOGIN ================= */
-
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
-  const pool = req.app.locals.pgPool;
+  const pool = req.pgPool || req.app?.locals?.pgPool;
 
   if (!pool) {
     return res.status(500).json({ error: "Database connection error" });
@@ -124,7 +130,6 @@ router.post("/login", async (req, res) => {
 
     const user = result.rows[0];
 
-    // Compare password with bcryptjs
     const match = await bcrypt.compare(password, user.password);
     if (!match) {
       return res.status(400).json({ error: "Invalid credentials" });
@@ -158,13 +163,16 @@ router.post("/login", async (req, res) => {
 });
 
 /* ================= REFRESH ================= */
-
 router.post("/refresh", async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
-  const pool = req.app.locals.pgPool;
+  const pool = req.pgPool || req.app?.locals?.pgPool;
 
   if (!refreshToken) {
     return res.status(401).json({ error: "No refresh token" });
+  }
+
+  if (!pool) {
+    return res.status(500).json({ error: "Database connection error" });
   }
 
   try {
@@ -196,10 +204,9 @@ router.post("/refresh", async (req, res) => {
 });
 
 /* ================= LOGOUT ================= */
-
 router.post("/logout", async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
-  const pool = req.app.locals.pgPool;
+  const pool = req.pgPool || req.app?.locals?.pgPool;
 
   if (refreshToken && pool) {
     await pool.query(
@@ -215,9 +222,8 @@ router.post("/logout", async (req, res) => {
 });
 
 /* ================= CURRENT USER ================= */
-
 router.get("/me", isAuth, async (req, res) => {
-  const pool = req.app.locals.pgPool;
+  const pool = req.pgPool || req.app?.locals?.pgPool;
 
   try {
     const result = await pool.query(

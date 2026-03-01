@@ -3,7 +3,6 @@ import pkg from 'pg';
 const { Pool } = pkg;
 
 // ==================== MONGODB (Serverless Optimized) ====================
-// Cache the MongoDB connection across serverless function invocations
 let cached = global.mongoose;
 
 if (!cached) {
@@ -11,13 +10,11 @@ if (!cached) {
 }
 
 export const connectMongoDB = async () => {
-  // If connection exists, return it
   if (cached.conn) {
     console.log('✅ Using cached MongoDB connection');
     return cached.conn;
   }
 
-  // If no connection promise exists, create one
   if (!cached.promise) {
     if (!process.env.MONGO_URI) {
       throw new Error("MONGO_URI is not defined in environment");
@@ -61,17 +58,20 @@ let pgPool = null;
 let poolPromise = null;
 
 export const getPostgresPool = async () => {
-  // Return existing pool if available
+  console.log('🔍 getPostgresPool() called at:', new Date().toISOString());
+  
   if (pgPool) {
+    console.log('✅ Using existing pool');
     return pgPool;
   }
 
-  // If pool is being created, wait for it
   if (poolPromise) {
+    console.log('⏳ Waiting for existing pool promise');
     return poolPromise;
   }
 
-  // Create new pool
+  console.log('🔄 Creating new PostgreSQL pool...');
+
   poolPromise = new Promise((resolve, reject) => {
     try {
       const required = ['PG_USER', 'PG_PASSWORD', 'PG_HOST', 'PG_PORT', 'PG_DB'];
@@ -80,8 +80,6 @@ export const getPostgresPool = async () => {
       if (missing.length > 0) {
         throw new Error(`Missing PostgreSQL environment variables: ${missing.join(', ')}`);
       }
-
-      console.log('🔍 Creating new PostgreSQL pool...');
 
       const pool = new Pool({
         user: process.env.PG_USER,
@@ -125,7 +123,6 @@ export const getPostgresPool = async () => {
   return poolPromise;
 };
 
-// Cleanup function for development
 export const closeConnections = async () => {
   if (mongoose.connection.readyState === 1) {
     await mongoose.connection.close();
