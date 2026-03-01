@@ -8,22 +8,21 @@ const router = express.Router();
 /* ================= COOKIE OPTIONS ================= */
 const accessCookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: "lax",
+  secure: true,  // MUST be true for sameSite:none
+  sameSite: "none",  // ✅ Change from "lax" to "none"
   path: "/",
-  domain: process.env.NODE_ENV === 'production' ? ".vercel.app" : undefined,
-  maxAge: 15 * 24 * 60 * 60 * 1000 // 15 days
+  domain: ".vercel.app",
+  maxAge: 15 * 24 * 60 * 60 * 1000
 };
 
 const refreshCookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: "lax",
+  secure: true,
+  sameSite: "none",  // ✅ Change from "lax" to "none"
   path: "/",
-  domain: process.env.NODE_ENV === 'production' ? ".vercel.app" : undefined,
-  maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+  domain: ".vercel.app",
+  maxAge: 7 * 24 * 60 * 60 * 1000
 };
-
 /* ================= TOKEN HELPERS ================= */
 const generateAccessToken = (user) =>
   jwt.sign(

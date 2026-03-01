@@ -31,7 +31,8 @@ app.use(cors({
     "https://dashboard-eta-gules-99.vercel.app",
     "https://*.vercel.app"
   ],
-  credentials: true
+  credentials: true,
+  exposedHeaders: ['set-cookie']
 }));
 
 app.use(express.json());
