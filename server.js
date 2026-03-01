@@ -22,7 +22,7 @@ const app = express();
 // ==================== MIDDLEWARE ====================
 app.use(cookieParser());
 app.use(cors({
-  origin: ["http://localhost:3000", "http://localhost:3001", "https://*.vercel.app"],
+  origin: ["http://localhost:3000", "http://localhost:3001","https://imagelibraryfrontendapp.vercel.app/", "https://*.vercel.app"],
   credentials: true
 }));
 app.use(express.json());
