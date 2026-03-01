@@ -109,9 +109,7 @@ router.post("/login", async (req, res) => {
   const { email, password } = req.body;
   const pool = req.pgPool || req.app?.locals?.pgPool;
 
-  if (!pool) {
-    return res.status(500).json({ error: "Database connection error" });
-  }
+  console.log('🔍 Login attempt for:', email);
 
   try {
     const result = await pool.query(
@@ -133,17 +131,44 @@ router.post("/login", async (req, res) => {
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken();
 
+    console.log('✅ Tokens generated');
+    console.log('Access token length:', accessToken.length);
+
     await pool.query(
       `INSERT INTO sessions (user_id, refresh_token, expires_at)
        VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
       [user.id, refreshToken]
     );
 
-    // Set cookies
-    res.cookie("token", accessToken, accessCookieOptions);
-    res.cookie("refreshToken", refreshToken, refreshCookieOptions);
+    // ✅ Set cookies with explicit options
+    console.log('📤 Setting cookies with options:', {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      domain: '.vercel.app',
+      path: '/'
+    });
 
-    // ✅ Send token in response
+    res.cookie("token", accessToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/",
+      domain: ".vercel.app",
+      maxAge: 15 * 24 * 60 * 60 * 1000
+    });
+
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/",
+      domain: ".vercel.app",
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
+    console.log('✅ Cookies set, sending response');
+
     res.json({
       token: accessToken,
       refreshToken: refreshToken,
@@ -160,7 +185,6 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ error: "Login failed" });
   }
 });
-
 /* ================= REFRESH ================= */
 router.post("/refresh", async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
