@@ -6,12 +6,11 @@ import isAuth from "../middleware/isAuth.js";
 const router = express.Router();
 
 /* ================= COOKIE OPTIONS ================= */
-
 const isProduction = process.env.NODE_ENV === 'production';
 
 const accessCookieOptions = {
   httpOnly: true,
-  secure: isProduction,         // localhost me false, prod me true
+  secure: isProduction,
   sameSite: isProduction ? "none" : "lax",
   path: "/",
   maxAge: 15 * 24 * 60 * 60 * 1000
@@ -24,6 +23,7 @@ const refreshCookieOptions = {
   path: "/",
   maxAge: 7 * 24 * 60 * 60 * 1000
 };
+
 /* ================= TOKEN HELPERS ================= */
 const generateAccessToken = (user) =>
   jwt.sign(
@@ -63,7 +63,7 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ error: "User already exists" });
     }
 
-    // Hash password with bcryptjs
+    // Hash password
     const hashed = await bcrypt.hash(password, 10);
 
     // Insert user
@@ -87,11 +87,11 @@ router.post("/register", async (req, res) => {
       [user.id, refreshToken]
     );
 
-    // Set cookies - NO DOMAIN
+    // Set cookies
     res.cookie("token", accessToken, accessCookieOptions);
     res.cookie("refreshToken", refreshToken, refreshCookieOptions);
 
-    // Send response with tokens
+    // Send response
     res.status(201).json({ 
       message: "Registration successful",
       token: accessToken,
@@ -105,16 +105,52 @@ router.post("/register", async (req, res) => {
   }
 });
 
-// backend/routes/auth.js - Login endpoint
+/* ================= LOGIN ================= */
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
   const pool = req.pgPool || req.app?.locals?.pgPool;
 
-  try {
-    // ... user validation ...
+  console.log('🔍 Login attempt for:', email);
 
+  // Validate input
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password required" });
+  }
+
+  if (!pool) {
+    console.error('❌ Database pool not available');
+    return res.status(500).json({ error: "Database connection error" });
+  }
+
+  try {
+    // Get user from database
+    const result = await pool.query(
+      "SELECT * FROM users WHERE email = $1",
+      [email]
+    );
+
+    if (!result.rows.length) {
+      console.log('❌ User not found:', email);
+      return res.status(400).json({ error: "User not found" });
+    }
+
+    const user = result.rows[0];
+    console.log('✅ User found:', user.email);
+
+    // Compare password
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
+      console.log('❌ Invalid password for:', email);
+      return res.status(400).json({ error: "Invalid credentials" });
+    }
+
+    console.log('✅ Password matched');
+
+    // Generate tokens
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken();
+
+    console.log('✅ Tokens generated');
 
     // Save session
     await pool.query(
@@ -123,32 +159,15 @@ router.post("/login", async (req, res) => {
       [user.id, refreshToken]
     );
 
-    // ✅ CRITICAL: Cookie settings for cross-domain
-    const isProduction = process.env.NODE_ENV === 'production';
-    
-    res.cookie("token", accessToken, {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? "none" : "lax",
-      path: "/",
-      maxAge: 15 * 24 * 60 * 60 * 1000, // 15 days
-      domain: isProduction ? undefined : undefined // Don't set domain
-    });
+    console.log('✅ Session saved');
 
-    res.cookie("refreshToken", refreshToken, {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? "none" : "lax",
-      path: "/",
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-      domain: isProduction ? undefined : undefined
-    });
+    // Set cookies
+    res.cookie("token", accessToken, accessCookieOptions);
+    res.cookie("refreshToken", refreshToken, refreshCookieOptions);
 
-    console.log('✅ Cookies set with options:', {
-      secure: isProduction,
-      sameSite: isProduction ? "none" : "lax"
-    });
+    console.log('✅ Cookies set');
 
+    // Send response
     res.json({
       token: accessToken,
       refreshToken: refreshToken,
@@ -162,9 +181,54 @@ router.post("/login", async (req, res) => {
 
   } catch (err) {
     console.error('❌ Login error:', err);
-    res.status(500).json({ error: "Login failed" });
+    res.status(500).json({ error: "Login failed", details: err.message });
   }
 });
+
+/* ================= REFRESH ================= */
+router.post("/refresh", async (req, res) => {
+  const refreshToken = req.cookies.refreshToken;
+  const pool = req.pgPool || req.app?.locals?.pgPool;
+
+  if (!refreshToken) {
+    return res.status(401).json({ error: "No refresh token" });
+  }
+
+  if (!pool) {
+    return res.status(500).json({ error: "Database connection error" });
+  }
+
+  try {
+    const session = await pool.query(
+      `SELECT user_id FROM sessions
+       WHERE refresh_token = $1 AND expires_at > NOW()`,
+      [refreshToken]
+    );
+
+    if (!session.rows.length) {
+      return res.status(401).json({ error: "Invalid refresh token" });
+    }
+
+    const user = await pool.query(
+      "SELECT id, email, role FROM users WHERE id = $1",
+      [session.rows[0].user_id]
+    );
+
+    const newAccessToken = generateAccessToken(user.rows[0]);
+
+    res.cookie("token", newAccessToken, accessCookieOptions);
+
+    res.json({ 
+      success: true,
+      token: newAccessToken 
+    });
+
+  } catch (err) {
+    console.error('❌ Refresh error:', err);
+    res.status(403).json({ error: "Token refresh failed" });
+  }
+});
+
 /* ================= LOGOUT ================= */
 router.post("/logout", async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
