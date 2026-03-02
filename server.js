@@ -22,15 +22,28 @@ const app = express();
 // ==================== MIDDLEWARE ====================
 app.use(cookieParser());
 
-// ✅ CORS with all frontend URLs
+// ✅ CORS - Allow all Vercel apps and localhost
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "https://website-ten-lemon-5x7d9qtg7q.vercel.app",
+  "https://dashboard-eta-gules-99.vercel.app",
+  "https://your-website.vercel.app", // Add your actual website URL
+  "https://your-dashboard.vercel.app" // Add your actual dashboard URL
+];
+
 app.use(cors({
-  origin: [
-    "http://localhost:3000", 
-    "http://localhost:3001",
-    "https://website-ten-lemon-5x7d9qtg7q.vercel.app",
-    "https://dashboard-eta-gules-99.vercel.app",
-    "https://*.vercel.app"
-  ],
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, etc)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes('vercel.app')) {
+      callback(null, true);
+    } else {
+      console.log('❌ Blocked origin:', origin);
+      callback(null, false);
+    }
+  },
   credentials: true,
   exposedHeaders: ['set-cookie']
 }));
@@ -41,22 +54,18 @@ app.use(express.urlencoded({ extended: true }));
 // Request logging
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  if (req.headers.origin) {
+    console.log(`🌐 Origin: ${req.headers.origin}`);
+  }
   next();
 });
 
-// ✅ Database connection middleware - FIXED with proper attachment
+// ✅ Database connection middleware
 app.use(async (req, res, next) => {
   try {
-    console.log('🔍 Getting PostgreSQL pool for request:', req.url);
-    
     const pool = await getPostgresPool();
-    console.log('✅ Pool obtained:', !!pool);
-    
-    // Attach to BOTH places for compatibility
     req.pgPool = pool;
     req.app.locals.pgPool = pool;
-    
-    console.log('✅ Pool attached to req and app.locals');
     next();
   } catch (err) {
     console.error('❌ DB Middleware Error:', err);

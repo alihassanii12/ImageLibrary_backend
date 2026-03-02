@@ -6,23 +6,24 @@ import isAuth from "../middleware/isAuth.js";
 const router = express.Router();
 
 /* ================= COOKIE OPTIONS ================= */
+const isProduction = process.env.NODE_ENV === 'production';
+
 const accessCookieOptions = {
   httpOnly: true,
-  secure: true,  // MUST be true for sameSite:none
-  sameSite: "lax",  // ✅ Change from "lax" to "none"
+  secure: isProduction,
+  sameSite: isProduction ? "none" : "lax",
   path: "/",
-  domain: ".vercel.app",
-  maxAge: 15 * 24 * 60 * 60 * 1000
+  maxAge: 15 * 24 * 60 * 60 * 1000 // 15 days
 };
 
 const refreshCookieOptions = {
   httpOnly: true,
-  secure: true,
-  sameSite: "lax",  // ✅ Change from "lax" to "none"
+  secure: isProduction,
+  sameSite: isProduction ? "none" : "lax",
   path: "/",
-  domain: ".vercel.app",
-  maxAge: 7 * 24 * 60 * 60 * 1000
+  maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
 };
+
 /* ================= TOKEN HELPERS ================= */
 const generateAccessToken = (user) =>
   jwt.sign(
@@ -86,11 +87,11 @@ router.post("/register", async (req, res) => {
       [user.id, refreshToken]
     );
 
-    // Set cookies
+    // Set cookies - NO DOMAIN
     res.cookie("token", accessToken, accessCookieOptions);
     res.cookie("refreshToken", refreshToken, refreshCookieOptions);
 
-    // ✅ Send token in response as well
+    // Send response with tokens
     res.status(201).json({ 
       message: "Registration successful",
       token: accessToken,
@@ -131,43 +132,18 @@ router.post("/login", async (req, res) => {
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken();
 
-    console.log('✅ Tokens generated');
-    console.log('Access token length:', accessToken.length);
-
+    // Save session
     await pool.query(
       `INSERT INTO sessions (user_id, refresh_token, expires_at)
        VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
       [user.id, refreshToken]
     );
 
-    // ✅ Set cookies with explicit options
-    console.log('📤 Setting cookies with options:', {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'lax',
-      domain: '.vercel.app',
-      path: '/'
-    });
+    // Set cookies - NO DOMAIN
+    res.cookie("token", accessToken, accessCookieOptions);
+    res.cookie("refreshToken", refreshToken, refreshCookieOptions);
 
-    res.cookie("token", accessToken, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none",
-      path: "/",
-      domain: ".vercel.app",
-      maxAge: 15 * 24 * 60 * 60 * 1000
-    });
-
-    res.cookie("refreshToken", refreshToken, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none",
-      path: "/",
-      domain: ".vercel.app",
-      maxAge: 7 * 24 * 60 * 60 * 1000
-    });
-
-    console.log('✅ Cookies set, sending response');
+    console.log('✅ Login successful, cookies set');
 
     res.json({
       token: accessToken,
@@ -185,6 +161,7 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ error: "Login failed" });
   }
 });
+
 /* ================= REFRESH ================= */
 router.post("/refresh", async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
@@ -192,10 +169,6 @@ router.post("/refresh", async (req, res) => {
 
   if (!refreshToken) {
     return res.status(401).json({ error: "No refresh token" });
-  }
-
-  if (!pool) {
-    return res.status(500).json({ error: "Database connection error" });
   }
 
   try {
