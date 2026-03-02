@@ -105,29 +105,13 @@ router.post("/register", async (req, res) => {
   }
 });
 
-/* ================= LOGIN ================= */
+// backend/routes/auth.js - Login endpoint
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
   const pool = req.pgPool || req.app?.locals?.pgPool;
 
-  console.log('🔍 Login attempt for:', email);
-
   try {
-    const result = await pool.query(
-      "SELECT * FROM users WHERE email = $1",
-      [email]
-    );
-
-    if (!result.rows.length) {
-      return res.status(400).json({ error: "User not found" });
-    }
-
-    const user = result.rows[0];
-
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(400).json({ error: "Invalid credentials" });
-    }
+    // ... user validation ...
 
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken();
@@ -139,11 +123,31 @@ router.post("/login", async (req, res) => {
       [user.id, refreshToken]
     );
 
-    // Set cookies - NO DOMAIN
-    res.cookie("token", accessToken, accessCookieOptions);
-    res.cookie("refreshToken", refreshToken, refreshCookieOptions);
+    // ✅ CRITICAL: Cookie settings for cross-domain
+    const isProduction = process.env.NODE_ENV === 'production';
+    
+    res.cookie("token", accessToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      path: "/",
+      maxAge: 15 * 24 * 60 * 60 * 1000, // 15 days
+      domain: isProduction ? undefined : undefined // Don't set domain
+    });
 
-    console.log('✅ Login successful, cookies set');
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax",
+      path: "/",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      domain: isProduction ? undefined : undefined
+    });
+
+    console.log('✅ Cookies set with options:', {
+      secure: isProduction,
+      sameSite: isProduction ? "none" : "lax"
+    });
 
     res.json({
       token: accessToken,
@@ -161,47 +165,6 @@ router.post("/login", async (req, res) => {
     res.status(500).json({ error: "Login failed" });
   }
 });
-
-/* ================= REFRESH ================= */
-router.post("/refresh", async (req, res) => {
-  const refreshToken = req.cookies.refreshToken;
-  const pool = req.pgPool || req.app?.locals?.pgPool;
-
-  if (!refreshToken) {
-    return res.status(401).json({ error: "No refresh token" });
-  }
-
-  try {
-    const session = await pool.query(
-      `SELECT user_id FROM sessions
-       WHERE refresh_token = $1 AND expires_at > NOW()`,
-      [refreshToken]
-    );
-
-    if (!session.rows.length) {
-      return res.status(401).json({ error: "Invalid refresh token" });
-    }
-
-    const user = await pool.query(
-      "SELECT id, email, role FROM users WHERE id = $1",
-      [session.rows[0].user_id]
-    );
-
-    const newAccessToken = generateAccessToken(user.rows[0]);
-
-    res.cookie("token", newAccessToken, accessCookieOptions);
-
-    res.json({ 
-      success: true,
-      token: newAccessToken 
-    });
-
-  } catch (err) {
-    console.error('❌ Refresh error:', err);
-    res.status(403).json({ error: "Token refresh failed" });
-  }
-});
-
 /* ================= LOGOUT ================= */
 router.post("/logout", async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
