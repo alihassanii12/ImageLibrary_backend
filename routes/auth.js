@@ -6,14 +6,15 @@ import isAuth from "../middleware/isAuth.js";
 const router = express.Router();
 
 /* ================= COOKIE OPTIONS ================= */
+
 const isProduction = process.env.NODE_ENV === 'production';
 
 const accessCookieOptions = {
   httpOnly: true,
-  secure: isProduction,
+  secure: isProduction,         // localhost me false, prod me true
   sameSite: isProduction ? "none" : "lax",
   path: "/",
-  maxAge: 15 * 24 * 60 * 60 * 1000 // 15 days
+  maxAge: 15 * 24 * 60 * 60 * 1000
 };
 
 const refreshCookieOptions = {
@@ -21,9 +22,8 @@ const refreshCookieOptions = {
   secure: isProduction,
   sameSite: isProduction ? "none" : "lax",
   path: "/",
-  maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+  maxAge: 7 * 24 * 60 * 60 * 1000
 };
-
 /* ================= TOKEN HELPERS ================= */
 const generateAccessToken = (user) =>
   jwt.sign(
