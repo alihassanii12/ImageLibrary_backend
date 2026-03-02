@@ -5,17 +5,40 @@ import isAuth from "../middleware/isAuth.js";
 
 const router = express.Router();
 
+/* ================= COOKIE OPTIONS ================= */
+const isProduction = process.env.NODE_ENV === 'production';
+
+const accessCookieOptions = {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+  path: "/",
+  maxAge: 15 * 24 * 60 * 60 * 1000
+};
+
+const refreshCookieOptions = {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+  path: "/",
+  maxAge: 7 * 24 * 60 * 60 * 1000
+};
+
 /* ================= TOKEN HELPERS ================= */
 const generateAccessToken = (user) =>
   jwt.sign(
-    { userId: user.id, email: user.email, role: user.role },
+    {
+      userId: user.id,
+      email: user.email,
+      role: user.role
+    },
     process.env.JWT_SECRET,
     { expiresIn: "15m" }
   );
 
-const generateRefreshToken = (user) =>
-  jwt.sign({ userId: user.id }, process.env.JWT_REFRESH_SECRET, {
-    expiresIn: "7d",
+const generateRefreshToken = () =>
+  jwt.sign({}, process.env.JWT_REFRESH_SECRET, {
+    expiresIn: "7d"
   });
 
 /* ================= REGISTER ================= */
@@ -24,39 +47,60 @@ router.post("/register", async (req, res) => {
   const pool = req.pgPool || req.app?.locals?.pgPool;
 
   try {
-    const exists = await pool.query("SELECT id FROM users WHERE email = $1", [
-      email,
-    ]);
-    if (exists.rows.length) return res.status(400).json({ error: "User exists" });
+    // Check if user exists
+    const exists = await pool.query(
+      "SELECT id FROM users WHERE email = $1",
+      [email]
+    );
 
+    if (exists.rows.length) {
+      return res.status(400).json({ error: "User already exists" });
+    }
+
+    // Hash password
     const hashed = await bcrypt.hash(password, 10);
+
+    // Insert user
     const result = await pool.query(
       `INSERT INTO users (name, email, password, auth_provider)
-       VALUES ($1, $2, $3, 'local') RETURNING id, name, email, role`,
+       VALUES ($1, $2, $3, 'local')
+       RETURNING id, name, email, role`,
       [name, email, hashed]
     );
+
     const user = result.rows[0];
 
+    // Generate NEW tokens for registration
     const accessToken = generateAccessToken(user);
-    const refreshToken = generateRefreshToken(user);
+    const refreshToken = generateRefreshToken();
 
-    // Save session in DB
+    // Save session
     await pool.query(
       `INSERT INTO sessions (user_id, refresh_token, expires_at)
        VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
       [user.id, refreshToken]
     );
 
-    // Send tokens in JSON (no cookies)
-    res.status(201).json({
+    // Set cookies
+    res.cookie("token", accessToken, accessCookieOptions);
+    res.cookie("refreshToken", refreshToken, refreshCookieOptions);
+
+    // Send response
+    res.status(201).json({ 
       message: "Registration successful",
-      accessToken,
-      refreshToken,
-      user,
+      token: accessToken,
+      refreshToken: refreshToken,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }
     });
+
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Registration failed" });
+    console.error('❌ Registration error:', err);
+    res.status(500).json({ error: err.message || "Registration failed" });
   }
 });
 
@@ -65,91 +109,100 @@ router.post("/login", async (req, res) => {
   const { email, password } = req.body;
   const pool = req.pgPool || req.app?.locals?.pgPool;
 
+  console.log('🔍 Login attempt for:', email);
+
   try {
-    const result = await pool.query("SELECT * FROM users WHERE email = $1", [
-      email,
-    ]);
-    if (!result.rows.length) return res.status(400).json({ error: "User not found" });
+    // Get user from database
+    const result = await pool.query(
+      "SELECT * FROM users WHERE email = $1",
+      [email]
+    );
+
+    if (!result.rows.length) {
+      return res.status(400).json({ error: "User not found" });
+    }
 
     const user = result.rows[0];
+
+    // Compare password
     const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(400).json({ error: "Invalid credentials" });
+    if (!match) {
+      return res.status(400).json({ error: "Invalid credentials" });
+    }
 
+    // ✅ GENERATE BRAND NEW TOKENS FOR LOGIN
     const accessToken = generateAccessToken(user);
-    const refreshToken = generateRefreshToken(user);
+    const refreshToken = generateRefreshToken();
 
+    console.log('✅ New login tokens generated');
+    console.log('Access token (first 20 chars):', accessToken.substring(0, 20) + '...');
+    console.log('Refresh token (first 20 chars):', refreshToken.substring(0, 20) + '...');
+
+    // ✅ DELETE OLD SESSIONS (optional - cleanup)
+    await pool.query(
+      "DELETE FROM sessions WHERE user_id = $1",
+      [user.id]
+    );
+    console.log('✅ Old sessions deleted');
+
+    // ✅ SAVE NEW SESSION
     await pool.query(
       `INSERT INTO sessions (user_id, refresh_token, expires_at)
        VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
       [user.id, refreshToken]
     );
 
+    console.log('✅ New session saved');
+
+    // Set cookies with NEW tokens
+    res.cookie("token", accessToken, accessCookieOptions);
+    res.cookie("refreshToken", refreshToken, refreshCookieOptions);
+
+    console.log('✅ New cookies set');
+
+    // Send response with NEW tokens
     res.json({
-      message: "Login successful",
-      accessToken,
-      refreshToken,
+      token: accessToken,
+      refreshToken: refreshToken,
       user: {
         id: user.id,
         name: user.name,
         email: user.email,
-        role: user.role,
-      },
+        role: user.role
+      }
     });
+
   } catch (err) {
-    console.error(err);
+    console.error('❌ Login error:', err);
     res.status(500).json({ error: "Login failed" });
-  }
-});
-
-/* ================= REFRESH TOKEN ================= */
-router.post("/refresh", async (req, res) => {
-  const { refreshToken } = req.body;
-  const pool = req.pgPool || req.app?.locals?.pgPool;
-
-  if (!refreshToken) return res.status(401).json({ error: "No refresh token" });
-
-  try {
-    const session = await pool.query(
-      `SELECT user_id FROM sessions
-       WHERE refresh_token = $1 AND expires_at > NOW()`,
-      [refreshToken]
-    );
-    if (!session.rows.length) return res.status(401).json({ error: "Invalid refresh token" });
-
-    const userResult = await pool.query(
-      "SELECT id, email, role FROM users WHERE id = $1",
-      [session.rows[0].user_id]
-    );
-    const user = userResult.rows[0];
-
-    const newAccessToken = generateAccessToken(user);
-    const newRefreshToken = generateRefreshToken(user);
-
-    // Update session
-    await pool.query(
-      `UPDATE sessions SET refresh_token=$1, expires_at=NOW() + INTERVAL '7 days'
-       WHERE user_id=$2`,
-      [newRefreshToken, user.id]
-    );
-
-    res.json({
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(403).json({ error: "Refresh failed" });
   }
 });
 
 /* ================= LOGOUT ================= */
 router.post("/logout", async (req, res) => {
-  const { refreshToken } = req.body;
+  const refreshToken = req.cookies.refreshToken;
   const pool = req.pgPool || req.app?.locals?.pgPool;
 
   if (refreshToken && pool) {
-    await pool.query("DELETE FROM sessions WHERE refresh_token=$1", [refreshToken]);
+    await pool.query(
+      "DELETE FROM sessions WHERE refresh_token = $1",
+      [refreshToken]
+    );
   }
+
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none",
+    path: "/"
+  });
+  
+  res.clearCookie("refreshToken", {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none",
+    path: "/"
+  });
 
   res.json({ success: true });
 });
