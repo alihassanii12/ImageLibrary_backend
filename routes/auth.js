@@ -9,7 +9,7 @@ const router = express.Router();
 const accessCookieOptions = {
   httpOnly: true,
   secure: true,  // MUST be true for sameSite:none
-  sameSite: "none",  // ✅ Change from "lax" to "none"
+  sameSite: "lax",  // ✅ Change from "lax" to "none"
   path: "/",
   domain: ".vercel.app",
   maxAge: 15 * 24 * 60 * 60 * 1000
@@ -18,7 +18,7 @@ const accessCookieOptions = {
 const refreshCookieOptions = {
   httpOnly: true,
   secure: true,
-  sameSite: "none",  // ✅ Change from "lax" to "none"
+  sameSite: "lax",  // ✅ Change from "lax" to "none"
   path: "/",
   domain: ".vercel.app",
   maxAge: 7 * 24 * 60 * 60 * 1000
@@ -144,7 +144,7 @@ router.post("/login", async (req, res) => {
     console.log('📤 Setting cookies with options:', {
       httpOnly: true,
       secure: true,
-      sameSite: 'none',
+      sameSite: 'lax',
       domain: '.vercel.app',
       path: '/'
     });
