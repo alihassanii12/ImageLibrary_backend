@@ -112,62 +112,44 @@ router.post("/login", async (req, res) => {
 
   console.log('🔍 Login attempt for:', email);
 
-  // Validate input
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email and password required" });
-  }
-
-  if (!pool) {
-    console.error('❌ Database pool not available');
-    return res.status(500).json({ error: "Database connection error" });
-  }
-
   try {
-    // Get user from database
+    // ✅ Get user from database
     const result = await pool.query(
       "SELECT * FROM users WHERE email = $1",
       [email]
     );
 
     if (!result.rows.length) {
-      console.log('❌ User not found:', email);
       return res.status(400).json({ error: "User not found" });
     }
 
+    // ✅ Define user variable
     const user = result.rows[0];
-    console.log('✅ User found:', user.email);
 
-    // Compare password
+    // ✅ Compare password
     const match = await bcrypt.compare(password, user.password);
     if (!match) {
-      console.log('❌ Invalid password for:', email);
       return res.status(400).json({ error: "Invalid credentials" });
     }
 
-    console.log('✅ Password matched');
-
-    // Generate tokens
+    // ✅ Generate tokens
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken();
 
-    console.log('✅ Tokens generated');
-
-    // Save session
+    // ✅ Save session
     await pool.query(
       `INSERT INTO sessions (user_id, refresh_token, expires_at)
        VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
       [user.id, refreshToken]
     );
 
-    console.log('✅ Session saved');
-
-    // Set cookies
+    // ✅ Set cookies
     res.cookie("token", accessToken, accessCookieOptions);
     res.cookie("refreshToken", refreshToken, refreshCookieOptions);
 
-    console.log('✅ Cookies set');
+    console.log('✅ Login successful, cookies set');
 
-    // Send response
+    // ✅ Send response
     res.json({
       token: accessToken,
       refreshToken: refreshToken,
@@ -181,51 +163,7 @@ router.post("/login", async (req, res) => {
 
   } catch (err) {
     console.error('❌ Login error:', err);
-    res.status(500).json({ error: "Login failed", details: err.message });
-  }
-});
-
-/* ================= REFRESH ================= */
-router.post("/refresh", async (req, res) => {
-  const refreshToken = req.cookies.refreshToken;
-  const pool = req.pgPool || req.app?.locals?.pgPool;
-
-  if (!refreshToken) {
-    return res.status(401).json({ error: "No refresh token" });
-  }
-
-  if (!pool) {
-    return res.status(500).json({ error: "Database connection error" });
-  }
-
-  try {
-    const session = await pool.query(
-      `SELECT user_id FROM sessions
-       WHERE refresh_token = $1 AND expires_at > NOW()`,
-      [refreshToken]
-    );
-
-    if (!session.rows.length) {
-      return res.status(401).json({ error: "Invalid refresh token" });
-    }
-
-    const user = await pool.query(
-      "SELECT id, email, role FROM users WHERE id = $1",
-      [session.rows[0].user_id]
-    );
-
-    const newAccessToken = generateAccessToken(user.rows[0]);
-
-    res.cookie("token", newAccessToken, accessCookieOptions);
-
-    res.json({ 
-      success: true,
-      token: newAccessToken 
-    });
-
-  } catch (err) {
-    console.error('❌ Refresh error:', err);
-    res.status(403).json({ error: "Token refresh failed" });
+    res.status(500).json({ error: "Login failed" });
   }
 });
 
